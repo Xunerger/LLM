@@ -1,0 +1,34 @@
+Traceback (most recent call last):
+  File "c:\Users\newbe\Desktop\py\LLM\model.py", line 224, in <module>
+Step: 0 Training Loss: 11.699 Validation Loss: 11.711
+Step: 50 Training Loss: 7.991 Validation Loss: 8.213
+    losses = estimate_loss()
+             ^^^^^^^^^^^^^^^
+  File "D:\develop\anaconda\envs\pytorch\Lib\site-packages\torch\utils\_contextlib.py", line 115, in decorate_context
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "c:\Users\newbe\Desktop\py\LLM\model.py", line 206, in estimate_loss
+    logits, loss = model(x_batch, y_batch)
+                   ^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\develop\anaconda\envs\pytorch\Lib\site-packages\torch\nn\modules\module.py", line 1518, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\develop\anaconda\envs\pytorch\Lib\site-packages\torch\nn\modules\module.py", line 1527, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "c:\Users\newbe\Desktop\py\LLM\model.py", line 144, in forward
+    x = self.token_embedding_lookup_table(idx) + position_embedding
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\develop\anaconda\envs\pytorch\Lib\site-packages\torch\nn\modules\module.py", line 1518, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\develop\anaconda\envs\pytorch\Lib\site-packages\torch\nn\modules\module.py", line 1527, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\develop\anaconda\envs\pytorch\Lib\site-packages\torch\nn\modules\sparse.py", line 162, in forward
+    return F.embedding(
+           ^^^^^^^^^^^^
+  File "D:\develop\anaconda\envs\pytorch\Lib\site-packages\torch\nn\functional.py", line 2233, in embedding
+    return torch.embedding(weight, input, padding_idx, scale_grad_by_freq, sparse)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+IndexError: index out of range in self

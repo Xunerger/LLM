@@ -9,22 +9,23 @@ from torch.nn import functional as F
 # Hyperparameters
 batch_size = 4  # How many batches per training step
 context_length = 16  # Length of the token chunk each batch
-d_model = 63  # The size of our model token embeddings
+d_model = 64  # The size of our model token embeddings
 num_blocks = 8  # Number of transformer blocks
 num_heads = 4  # Number of heads in Multi_head attention
-learning_rate = le-3  # 0.001
+learning_rate = 1e-3  # 0.001
 dropout = 0.1  # Dropout rate
-max_iters = 500  # Total of training iterations <- Change this to smaller number for testing
+max_iters = 5000  # Total of training iterations <- Change this to smaller number for testing
 eval_interval = 50  # How often to evaluate
 eval_iters = 20  # Number of iterations to average for evaluation
-device = 'cuda' if torch.cuda.is_available() else 'cpu'  # Use GPU if it's available
+# device = 'cuda' if torch.cuda.is_available() else 'cpu'  # Use GPU if it's available
+device = 'cpu'
 TORCH_SEED = 1337
 torch.manual_seed(TORCH_SEED)
 
 # get the dataset
-if not os.path.exists('data/sales_textbook.txt'):
+if not os.path.exists('sales_textbook.txt'):
     url = 'https://huggingface.co/datasets/goendalf666/sales-textbook_for_convincing_and_selling/raw/main/sales_textbook.txt'
-    with open('data/sales_textbook.txt', 'wb') as f:
+    with open('sales_textbook.txt', 'wb') as f:
         f.write(requests.get(url).content)
 
 with open('sales_textbook.txt', 'r') as f:
@@ -42,19 +43,19 @@ valid_data = tokenized_text[train_size:]
 
 
 class FeedforwardNetwork(nn.Module):
-    def __init__(self, d_model, d_ff):
+    def __init__(self):
         super(FeedforwardNetwork, self).__init__()
         self.linear1 = nn.Linear(d_model, d_model * 4)
         self.Relu = nn.ReLU()
         self.linear2 = nn.Linear(d_model * 4, d_model)
         self.dropout = nn.Dropout(0.1)
 
-        def forward(self, x):
-            x = self.linear1(x)
-            x = self.Relu(x)
-            x = self.linear2(x)
-            x = self.dropout(x)
-            return x
+    def forward(self, x):
+        x = self.linear1(x)
+        x = self.Relu(x)
+        x = self.linear2(x)
+        x = self.dropout(x)
+        return x
 
 
 class ScaledDotProductAttention(nn.Module):
@@ -68,14 +69,15 @@ class ScaledDotProductAttention(nn.Module):
             torch.ones(context_length, context_length)))
 
     def forward(self, x):
-        Q = x @ self.Wq
-        K = x @ self.Wk
-        V = x @ self.Wv
+        Q = self.Wq(x)
+        K = self.Wk(x)
+        V = self.Wv(x)
 
         attention = Q @ K.transpose(-2, -1) / math.sqrt(d_model // num_heads)
         attention = attention.masked_fill(self.mask == 0, float('-inf'))
         attention = F.softmax(attention, dim=-1)
-        attention = attention @ V
+        output = attention @ V
+        return output
 
 
 class MultiHeadAttention(nn.Module):
@@ -83,16 +85,15 @@ class MultiHeadAttention(nn.Module):
         super().__init__()
         self.heads = nn.ModuleList(
             [ScaledDotProductAttention() for _ in range(num_heads)])
-        self.projection_layer = nn.Linear(d_model, d_model)
+        self.projection_layer = nn.Linear(d_model * num_heads, d_model)
         self.dropout = nn.Dropout(0.1)
 
     def forward(self, x):
-        self.heads = [head(x) for head in self.heads]
-        out = torch.cat(self.heads, dim=-1)
-        out = self.projection_layer(out)
-        out = self.dropout(out)
-
-        return out
+        head_outputs = [head(x) for head in self.heads]
+        concatenated = torch.cat(head_outputs, dim=-1)
+        projected = self.projection_layer(concatenated)
+        output = self.dropout(projected)
+        return output
 
 
 class TransformerBlock(nn.Module):
@@ -104,9 +105,16 @@ class TransformerBlock(nn.Module):
         self.feedforward_network = FeedforwardNetwork()
 
     def forward(self, x):
-        x = x + self.multi_head_attention(self.layer_norm1(x))
-        x = x + self.feedforward_network(self.layer_norm2(x))
-
+        # Multi-head attention
+        attention_output = self.multi_head_attention(x)
+        # Residual connection and layer normalization
+        x = x + attention_output
+        x = self.layer_norm1(x)
+        # Feedforward network
+        feedforward_output = self.feedforward_network(x)
+        # Residual connection and layer normalization
+        x = x + feedforward_output
+        x = self.layer_norm2(x)
         return x
 
 
@@ -117,7 +125,7 @@ class Model(nn.Module):
             max_token_value, d_model)
         self.transformer_blocks = nn.ModuleList(
             [TransformerBlock() for _ in range(num_blocks)])
-        self.model_out_linear_layer = nn.Linear(d_model)
+        self.model_out_linear_layer = nn.Linear(d_model, max_token_value)
 
     def forward(self, idx, targets=None):
         B, T = idx.shape
@@ -134,7 +142,8 @@ class Model(nn.Module):
         # change position_encoding_lookup_table from (context_length, d_model) to (T, d_model)
         position_embedding = position_encoding_lookup_table[:T, :].to(device)
         x = self.token_embedding_lookup_table(idx) + position_embedding
-        x = self.transformer_blocks(x)
+        for block in self.transformer_blocks:
+            x = block(x)
         # get the final logits
         logits = self.model_out_linear_layer(x)
 
@@ -172,8 +181,9 @@ model = Model().to(device)
 # Get batch
 
 
-def get_batch(str):
+def get_batch(split: str):
     data = train_data if split == 'train' else valid_data
+    data = torch.tensor(data)
     idxs = torch.randint(low=0, high=len(
         data) - context_length, size=(batch_size,))
     x = torch.stack([data[idx:idx + context_length]
@@ -194,17 +204,23 @@ def estimate_loss():
         for k in range(eval_iters):
             x_batch, y_batch = get_batch(split)
             logits, loss = model(x_batch, y_batch)
-            losses[k] = loss.item()
-        out[split] = losses.mean()
+            # Check if loss is not None before calculating mean
+            if loss is not None:
+                losses[k] = loss.item()
+        if len(losses.nonzero()) > 0:  # Check if there are non-zero losses
+            out[split] = losses[losses.nonzero()].mean()
+        else:
+            out[split] = torch.tensor(0.0)  # If all losses are None, set to 0
     model.train()
     return out
 
 
 # Use AdamW optimizer
-optimizer = torch.optim.AdamW(params=model.parameters(), lr=learning_rate)
+# Create the optimizer
+optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 tracked_losses = list()
 for step in range(max_iters):
-    if step % eval_iters == 0 or step == max_iters - 1:
+    if step % eval_interval == 0 or step == max_iters - 1:
         losses = estimate_loss()
         tracked_losses.append(losses)
         print('Step:', step, 'Training Loss:', round(losses['train'].item(), 3), 'Validation Loss:',
@@ -221,7 +237,7 @@ torch.save(model.state_dict(), 'model-ckpt.pt')
 
 # Generate
 model.eval()
-start = 'The salesperson'
+start = 'The product is'
 start_ids = encoding.encode(start)
 x = (torch.tensor(start_ids, dtype=torch.long, device=device)[None, ...])
 y = model.generate(x, max_new_tokens=100)
