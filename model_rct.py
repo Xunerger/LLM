@@ -17,12 +17,11 @@ dropout = 0.1  # Dropout rate
 max_iters = 5000  # Total of training iterations <- Change this to smaller number for testing
 eval_interval = 50  # How often to evaluate
 eval_iters = 20  # Number of iterations to average for evaluation
-# device = 'cuda' if torch.cuda.is_available() else 'cpu'  # Use GPU if it's available
-device = 'cpu'
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
 TORCH_SEED = 1337
 torch.manual_seed(TORCH_SEED)
 
-# get the dataset
+# Get the dataset
 if not os.path.exists('sales_textbook.txt'):
     url = 'https://huggingface.co/datasets/goendalf666/sales-textbook_for_convincing_and_selling/raw/main/sales_textbook.txt'
     with open('sales_textbook.txt', 'wb') as f:
@@ -34,7 +33,7 @@ with open('sales_textbook.txt', 'r') as f:
 # Tokenize the text
 encoding = tiktoken.get_encoding("cl100k_base")
 tokenized_text = encoding.encode(text)
-max_token_value = max(tokenized_text)
+max_token_value = max(tokenized_text) + 1
 
 # Split init train validation
 train_size = int(len(tokenized_text) * 0.9)
@@ -46,13 +45,13 @@ class FeedforwardNetwork(nn.Module):
     def __init__(self):
         super(FeedforwardNetwork, self).__init__()
         self.linear1 = nn.Linear(d_model, d_model * 4)
-        self.Relu = nn.ReLU()  # 激活函数
+        self.relu = nn.ReLU()
         self.linear2 = nn.Linear(d_model * 4, d_model)
         self.dropout = nn.Dropout(0.1)
 
     def forward(self, x):
         x = self.linear1(x)
-        x = self.Relu(x)
+        x = self.relu(x)
         x = self.linear2(x)
         x = self.dropout(x)
         return x
@@ -64,7 +63,6 @@ class ScaledDotProductAttention(nn.Module):
         self.Wq = nn.Linear(d_model, d_model)
         self.Wk = nn.Linear(d_model, d_model)
         self.Wv = nn.Linear(d_model, d_model)
-        # apply mask
         self.register_buffer('mask', torch.tril(
             torch.ones(context_length, context_length)))
 
@@ -73,8 +71,9 @@ class ScaledDotProductAttention(nn.Module):
         K = self.Wk(x)
         V = self.Wv(x)
 
-        attention = Q @ K.transpose(-2, -1) / math.sqrt(d_model // num_heads)
-        attention = attention.masked_fill(self.mask == 0, float('-inf'))
+        attention = Q @ K.transpose(-2, -1) / math.sqrt(d_model)
+        attention = attention.masked_fill(
+            self.mask[:attention.size(-2), :attention.size(-1)] == 0, float('-inf'))
         attention = F.softmax(attention, dim=-1)
         output = attention @ V
         return output
@@ -105,14 +104,10 @@ class TransformerBlock(nn.Module):
         self.feedforward_network = FeedforwardNetwork()
 
     def forward(self, x):
-        # Multi-head attention
         attention_output = self.multi_head_attention(x)
-        # Residual connection and layer normalization
         x = x + attention_output
         x = self.layer_norm1(x)
-        # Feedforward network
         feedforward_output = self.feedforward_network(x)
-        # Residual connection and layer normalization
         x = x + feedforward_output
         x = self.layer_norm2(x)
         return x
@@ -123,114 +118,94 @@ class Model(nn.Module):
         super().__init__()
         self.token_embedding_lookup_table = nn.Embedding(
             max_token_value, d_model)
+        self.position_encoding_lookup_table = self.generate_positional_encoding(
+            context_length, d_model)
         self.transformer_blocks = nn.ModuleList(
             [TransformerBlock() for _ in range(num_blocks)])
         self.model_out_linear_layer = nn.Linear(d_model, max_token_value)
 
-    def forward(self, idx, targets=None):
-        B, T = idx.shape
-        position_encoding_lookup_table = torch.zeros(
-            context_length, d_model, device=device)
-        position = torch.arange(
-            0, context_length, dtype=torch.float).unsqueeze(1)
+    def generate_positional_encoding(self, max_len, d_model):
+        position_encoding = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
         div_term = torch.exp(torch.arange(
             0, d_model, 2).float() * (-math.log(10000.0) / d_model))
-        position_encoding_lookup_table[:, 0::2] = torch.sin(
-            position * div_term)
-        position_encoding_lookup_table[:, 1::2] = torch.cos(
-            position * div_term)
-        # change position_encoding_lookup_table from (context_length, d_model) to (T, d_model)
-        position_embedding = position_encoding_lookup_table[:T, :].to(device)
-        x = self.token_embedding_lookup_table(idx) + position_embedding
+        position_encoding[:, 0::2] = torch.sin(position * div_term)
+        position_encoding[:, 1::2] = torch.cos(position * div_term)
+        return position_encoding
+
+    def forward(self, idx, targets=None):
+        B, T = idx.shape
+        token_embeddings = self.token_embedding_lookup_table(idx)
+        position_embeddings = self.position_encoding_lookup_table[:T, :].to(
+            device)
+        x = token_embeddings + position_embeddings
         for block in self.transformer_blocks:
             x = block(x)
-        # get the final logits
         logits = self.model_out_linear_layer(x)
 
         if targets is not None:
             B, T, C = logits.shape
-            logits_reshaped = logits.view(B * T, C)
-            targets_reshaped = targets.view(B * T)
-            loss = F.cross_entropy(input=logits_reshaped,
-                                   target=targets_reshaped)
+            logits = logits.view(B * T, C)  # view()用于改变tensor的形状，数值不改变
+            targets = targets.view(B * T)
+            # cross_entropy()用于求交叉熵https://blog.csdn.net/wuliBob/article/details/104119616
+            loss = F.cross_entropy(logits, targets)
         else:
             loss = None
         return logits, loss
 
-    def generate(self, idx, max_new_tokens=100):
-        # idx is (B,T) array of indices in the current context
+    def generate(self, idx, max_new_tokens=100, temperature=1.0):
         for _ in range(max_new_tokens):
-            # Crop idx to the max size of our positional embedding table
             idx_crop = idx[:, -context_length:]
-            # Get predictions
-            logits, loss = self.forward(idx_crop)
-            # Get the last time step from logits where the dimensions of the logits are (B, T, C)
-            logits_last_timestep = logits[:, -1, :]
-            # Apply softmax to get probabilities
-            probs = F.softmax(input=logits_last_timestep, dim=-1)
-            # Sample from the probabilities' distribution
-            idx_next = torch.multinomial(input=probs, num_samples=1)
-            # Append the sampled indexes idx_next to idx
+            logits, _ = self.forward(idx_crop)
+            logits = logits[:, -1, :] / temperature
+            probs = F.softmax(logits, dim=-1)
+            idx_next = torch.multinomial(probs, num_samples=1)
             idx = torch.cat((idx, idx_next), dim=1)
         return idx
 
 
-# Create the model
 model = Model().to(device)
 
-# Get batch
+data = torch.tensor(tokenized_text, dtype=torch.long)
+n = int(0.9 * len(data))
+train_data = data[:n]
+val_data = data[n:]
 
 
-def get_batch(split: str):
-    data = train_data if split == 'train' else valid_data
-    data = torch.tensor(data)
-    idxs = torch.randint(low=0, high=len(
-        data) - context_length, size=(batch_size,))
-    x = torch.stack([data[idx:idx + context_length]
-                    for idx in idxs]).to(device)
-    y = torch.stack([data[idx + 1:idx + context_length + 1]
-                    for idx in idxs]).to(device)
-    return x, y
-
-# Calculate loss
+def get_batch(data, batch_size):
+    ix = torch.randint(len(data) - context_length, (batch_size,))
+    x = torch.stack([data[i:i + context_length] for i in ix])
+    y = torch.stack([data[i + 1:i + context_length + 1] for i in ix])
+    return x.to(device), y.to(device)
 
 
 @torch.no_grad()
 def estimate_loss():
-    out = {}
     model.eval()
-    for split in ['train', 'valid']:
-        losses = torch.zeros(eval_iters)
-        for k in range(eval_iters):
-            x_batch, y_batch = get_batch(split)
-            logits, loss = model(x_batch, y_batch)
-            # Check if loss is not None before calculating mean
-            if loss is not None:
-                losses[k] = loss.item()
-        if len(losses.nonzero()) > 0:  # Check if there are non-zero losses
-            out[split] = losses[losses.nonzero()].mean()
-        else:
-            out[split] = torch.tensor(0.0)  # If all losses are None, set to 0
+    losses = torch.zeros(eval_iters)
+    for k in range(eval_iters):
+        X, Y = get_batch(val_data, batch_size)
+        logits, loss = model(X, Y)
+        losses[k] = loss.item()
     model.train()
-    return out
+    return losses.mean()
 
 
-# Use AdamW optimizer
-# Create the optimizer
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
-tracked_losses = list()
-for step in range(max_iters):
-    if step % eval_interval == 0 or step == max_iters - 1:
-        losses = estimate_loss()
-        tracked_losses.append(losses)
-        print('Step:', step, 'Training Loss:', round(losses['train'].item(), 3), 'Validation Loss:',
-              round(losses['valid'].item(), 3))
 
-    xb, yb = get_batch('train')
+for iter in range(max_iters):
+    if iter % eval_interval == 0:
+        loss = estimate_loss()
+        print(f"step {iter}: loss {loss:.4f}")
+
+    xb, yb = get_batch(train_data, batch_size)
     logits, loss = model(xb, yb)
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
     optimizer.step()
+
+context = torch.zeros((1, 1), dtype=torch.long, device=device)
+print(encoding.decode(model.generate(context, max_new_tokens=200)[0].tolist()))
 
 # Save the model state dictionary
 torch.save(model.state_dict(), 'model-ckpt.pt')
