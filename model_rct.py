@@ -181,6 +181,9 @@ def get_batch(data, batch_size):
 
 @torch.no_grad()
 def estimate_loss():
+    """装饰器，将estimate_loss()函数作为torch.no_grad()函数返回值的参数
+
+    """
     model.eval()
     losses = torch.zeros(eval_iters)
     for k in range(eval_iters):
